@@ -1,6 +1,7 @@
 package azuread
 
 import (
+	"context"
 	"fmt"
 	"log"
 
@@ -68,6 +69,11 @@ func resourceGroup() *schema.Resource {
 				Type:     schema.TypeString,
 				Computed: true,
 			},
+			"prevent_duplicate_names": {
+				Type:     schema.TypeBool,
+				Optional: true,
+				Default:  false,
+			},
 		},
 	}
 }
@@ -77,6 +83,13 @@ func resourceGroupCreate(d *schema.ResourceData, meta interface{}) error {
 	ctx := meta.(*ArmClient).StopContext
 
 	name := d.Get("name").(string)
+
+	if d.Get("prevent_duplicate_names").(bool) {
+		err := aadGroupCheckNameAvailability(client, ctx, name)
+		if err != nil {
+			return err
+		}
+	}
 
 	properties := graphrbac.GroupCreateParameters{
 		DisplayName:          &name,
@@ -168,6 +181,10 @@ func resourceGroupRead(d *schema.ResourceData, meta interface{}) error {
 	}
 	d.Set("owners", owners)
 
+	if preventDuplicates := d.Get("prevent_duplicate_names").(bool); !preventDuplicates {
+		d.Set("prevent_duplicate_names", false)
+	}
+
 	return nil
 }
 
@@ -236,5 +253,33 @@ func resourceGroupDelete(d *schema.ResourceData, meta interface{}) error {
 		}
 	}
 
+	return nil
+}
+
+func aadGroupFindByName(client graphrbac.GroupsClient, ctx context.Context, name string) (*graphrbac.ADGroup, error) {
+	nameFilter := fmt.Sprintf("displayName eq '%s'", name)
+	resp, err := client.List(ctx, nameFilter)
+
+	if err != nil {
+		return nil, fmt.Errorf("unable to list Groups with filter %q: %+v", nameFilter, err)
+	}
+
+	for _, group := range resp.Values() {
+		if *group.DisplayName == name {
+			return &group, nil
+		}
+	}
+
+	return nil, nil
+}
+
+func aadGroupCheckNameAvailability(client graphrbac.GroupsClient, ctx context.Context, name string) error {
+	existingGroup, err := aadGroupFindByName(client, ctx, name)
+	if err != nil {
+		return err
+	}
+	if existingGroup != nil {
+		return fmt.Errorf("Existing Azure Active Directory Group with name %q (ObjID: %q) was found and `prevent_duplicate_names` was specified", name, *existingGroup.ObjectID)
+	}
 	return nil
 }
